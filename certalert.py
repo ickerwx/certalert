@@ -78,6 +78,8 @@ def scan_host(q, args):
                         print(f'Certificate at {ip}:{port} has expired!')
                     elif (cert_expiry - now).days <= 7:
                         print(f'Certificate at {ip}:{port} will expire in {(cert_expiry - now).days} days!')
+                    if args.verbose:
+                        print(f'Certificate at {ip}:{port} expires on {cert_expiry.strftime("%Y-%m-%d %H:%M:%S")}')
                 
                 # parse the subject out of the
             except (ssl.SSLError, ConnectionRefusedError, socket.timeout, OSError):
