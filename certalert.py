@@ -91,10 +91,9 @@ def scan_host(q, result_queue, args):
                         printlock.release()
                         result_queue.put((now.strftime('%Y-%m-%d %H:%M:%SZ'), str(host), port, crypto.dump_certificate(crypto.FILETYPE_PEM, cert), cert.digest('SHA256').decode(), 1 if cert.has_expired() else 0, cert_expiry.strftime("%Y-%m-%d %H:%M:%SZ")))
                     elif (cert_expiry - now).days <= args.days:
-                        if args.verbose:
-                            printlock.acquire()
-                            print(f'[!] Certificate at {host}:{port} will expire in {(cert_expiry - now).days} days, on on {cert_expiry.strftime("%Y-%m-%d %H:%M:%SZ")}!')
-                            printlock.release()
+                        printlock.acquire()
+                        print(f'[!] Certificate at {host}:{port} will expire in {(cert_expiry - now).days} days, on on {cert_expiry.strftime("%Y-%m-%d %H:%M:%SZ")}!')
+                        printlock.release()
                         result_queue.put((now.strftime('%Y-%m-%d %H:%M:%SZ'), str(host), port, crypto.dump_certificate(crypto.FILETYPE_PEM, cert), cert.digest('SHA256').decode(), 1 if cert.has_expired() else 0, cert_expiry.strftime("%Y-%m-%d %H:%M:%SZ")))
                     elif args.verbose:
                         printlock.acquire()
