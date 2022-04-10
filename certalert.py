@@ -22,12 +22,11 @@ def parse_args():
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter,
                                      argument_default=argparse.SUPPRESS)
 
-    group = parser.add_mutually_exclusive_group(required=True)
-
-    group.add_argument('-i', '--ip', dest='hosts',
-                       help='comma-separated list of hostnames, IP addresses or CIDR networks (e.g. localhost,127.0.0.1,fe80::,1.2.3.0/24)')
-    group.add_argument('-f', '--file', dest='file',
-                       help='file containing host port1,port2,... lines, one line per host (see README)')
+    sourcegroup = parser.add_mutually_exclusive_group(required=True)
+    sourcegroup.add_argument('-i', '--ip', dest='hosts',
+                             help='comma-separated list of hostnames, IP addresses or CIDR networks (e.g. localhost,127.0.0.1,fe80::,1.2.3.0/24)')
+    sourcegroup.add_argument('-f', '--file', dest='file',
+                             help='file containing host port1,port2,... lines, one line per host (see README)')
     parser.add_argument('-p', '--ports', dest='ports', help='comma-separated list of ports',
                         default='443,636,993,995,8443')
     parser.add_argument('-d', '--db', dest='dbfile', default='data.sqlite')
@@ -87,7 +86,7 @@ def scan_host(q, result_queue, args):
                 if cert_expiry is not None:
                     if cert.has_expired():
                         printlock.acquire()
-                        print(f'[-] Certificate at {host}:{port} expired on {cert_expiry.strftime("%Y-%m-%d %H:%M:%S")}!')
+                        print(f'[-] Certificate at {host}:{port} expired on {cert_expiry.strftime("%Y-%m-%d %H:%M:%SZ")}!')
                         printlock.release()
                         result_queue.put((now.strftime('%Y-%m-%d %H:%M:%SZ'), str(host), port, crypto.dump_certificate(crypto.FILETYPE_PEM, cert), cert.digest('SHA256').decode(), 1 if cert.has_expired() else 0, cert_expiry.strftime("%Y-%m-%d %H:%M:%SZ")))
                     elif (cert_expiry - now).days <= args.days:
@@ -97,7 +96,7 @@ def scan_host(q, result_queue, args):
                         result_queue.put((now.strftime('%Y-%m-%d %H:%M:%SZ'), str(host), port, crypto.dump_certificate(crypto.FILETYPE_PEM, cert), cert.digest('SHA256').decode(), 1 if cert.has_expired() else 0, cert_expiry.strftime("%Y-%m-%d %H:%M:%SZ")))
                     elif args.verbose:
                         printlock.acquire()
-                        print(f'[+] Certificate at {host}:{port} expires on {cert_expiry.strftime("%Y-%m-%d %H:%M:%S")}')
+                        print(f'[+] Certificate at {host}:{port} expires on {cert_expiry.strftime("%Y-%m-%d %H:%M:%SZ")}')
                         printlock.release()
 
             except (OSError, socket.timeout):
@@ -136,14 +135,13 @@ def record_result(result_queue, args):
             # first, check if the combo host:port:fingerprint is already in the db
             # if so, update the date field and the expired field, otherwise insert the whole set
             date, host, port, _, fingerprint, expired, _ = result
-            cursor.execute(f'select rowid,host,port from certdata where fingerprint="{fingerprint}"')
-            dbdata = cursor.fetchall()
             record_already_present = False
-            if len(dbdata) > 0:
-                for r, h, p in dbdata:
-                    if host == h and port == p:
-                        cursor.execute(f'update certdata set date="{date}", expired={expired} where rowid={r}')
-                        record_already_present = True
+            cursor.execute('select rowid,host,port from certdata where fingerprint=?', (fingerprint,))
+            dbdata = cursor.fetchall()
+            for r, h, p in dbdata:
+                if host == h and port == p:
+                    cursor.execute('update certdata set date=?, expired=? where rowid=?', (date, expired, r))
+                    record_already_present = True
             if not record_already_present:
                 cursor.execute(query, result)
             conn.commit()
@@ -152,16 +150,7 @@ def record_result(result_queue, args):
             pass
 
 
-def main():
-    # main() just creates -t threads, puts the targets in a queue and runs the threads.
-    # then it just periodically checks if the queue is empty and if all threads are finished
-    # if this happens, the program exits
-    args = parse_args()
-
-    # all targets are written to a queue. Each thread will pick the next available target from the queue.
-    target_queue = queue.Queue()  # contains tuples: (ip_address, hostname, port list)
-    result_queue = queue.Queue()
-
+def write_targets_to_queue(target_queue, args):
     try:
         # This block fills the target queue.
         if 'hosts' in args:
@@ -183,20 +172,19 @@ def main():
             # -f/--file was used
             lines = [ln.strip() for ln in open(args.file, 'r').readlines()]
             for line in lines:
-                if ' ' in line:
+                if ' ' in line:  # line is "targethost list,of,ports,for,this,particular,host"
                     host, ports = line.split(' ', 1)
-                    if len(ports.strip()) == 0:
-                        # the line contained spaces but nothing after, so use default ports instead
-                        ports = args.ports
                 else:
+                    # no spaces in this line
                     host = line
                     ports = args.ports
                 ports = set([int(p) for p in ports.split(',')])  # convert list comprehension to set for unique values
-                if '/' in host:
+                if '/' in host:  # CIDR notation network
                     network = ipa.ip_network(host, strict=False)
                     for host in network.hosts():
-                        target_queue.put((host, ports))
+                        target_queue.put((host, ports))  # put each IP of the network into the target queue
                 else:
+                    # single host
                     try:
                         target_queue.put((ipa.ip_address(host), ports))
                     except ValueError:
@@ -205,6 +193,33 @@ def main():
     except Exception as e:
         print('Error: %s' % e, file=sys.stderr)
         sys.exit(1)
+
+
+def clear_queue_kill_threads(target_queue, result_queue, scanthreads, dbthread):
+    # Ctrl+C was pressed: empty the queue and wait for the threads to finish
+    # each thread will return once the queue is empty
+    while not target_queue.empty():
+        try:
+            target_queue.get(block=False)
+        except queue.Empty:
+            pass
+    for t in scanthreads:
+        t.join()
+    result_queue.put(killcmd)
+    dbthread.join()
+
+
+def main():
+    # main() just creates -t threads, puts the targets in a queue and runs the threads.
+    # then it just periodically checks if the queue is empty and if all threads are finished
+    # if this happens, the program exits
+    args = parse_args()
+
+    # all targets are written to a queue. Each thread will pick the next available target from the queue.
+    target_queue = queue.Queue()  # contains tuples: (either IP or hostname, port list)
+    result_queue = queue.Queue()  # contains tuples (scan date, ip|host, port, PEM certificate, SHA256 fingerprint, 1 if cert is expired, expiry date)
+
+    write_targets_to_queue(target_queue, args)
 
     # create args.threads threads, start them and add them to the list
     threads = []
@@ -229,17 +244,7 @@ def main():
                 sys.exit(0)
 
         except KeyboardInterrupt:
-            # Ctrl+C was pressed: empty the queue and wait for the threads to finish
-            # each thread will return once the queue is empty
-            while not target_queue.empty():
-                try:
-                    target_queue.get(block=False)
-                except queue.Empty:
-                    pass
-            for t in threads:
-                t.join()
-            result_queue.put(killcmd)
-            dbthread.join()
+            clear_queue_kill_threads(target_queue, result_queue, threads, dbthread)
             sys.exit(0)
 
 
