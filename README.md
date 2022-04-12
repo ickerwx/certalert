@@ -2,8 +2,8 @@
 Check host certificates and get an alert when a certificate is about to expire or has expired.
 
 ```
-./certalert -h                                       
-usage: certalert [-h] (-i HOSTS | -f FILE) [-p PORTS] [-d DBFILE] [-g IGNOREFILE] [-l] [-k] [-y DAYS] [-t THREADS] [-to TIMEOUT] [-v]
+$ ./certalert -h                                      
+usage: certalert [-h] (-i HOSTS | -f FILE) [-d DBFILE] [-g IGNOREFILE] [-k] [-l] [-m] [-p PORTS] [-t THREADS] [-to TIMEOUT] [-v] [-y DAYS]
 
 Check sites and servers for expiring/expired TLS certificates
 
@@ -11,19 +11,20 @@ options:
   -h, --help            show this help message and exit
   -i HOSTS, --ip HOSTS  comma-separated list of hostnames, IP addresses or CIDR networks (e.g. localhost,127.0.0.1,fe80::,1.2.3.0/24)
   -f FILE, --file FILE  file containing host port1,port2,... lines, one line per host (see README)
-  -p PORTS, --ports PORTS
-                        comma-separated list of ports (default: 443,636,993,995,8443)
   -d DBFILE, --db DBFILE
   -g IGNOREFILE, --ignore IGNOREFILE
                         File with hosts that should be ignored, one host per line (default: None)
-  -l, --splunk          Send an event to Splunk using the HTTP Event Collector (see splunk.json) (default: False)
   -k, --insecure        Disable certificate checks when sending data to splunk. (default: False)
-  -y DAYS, --days DAYS  days until expiry date (default: 7)
+  -l, --splunk          Send an event to Splunk using the HTTP Event Collector (see splunk.json) (default: False)
+  -m, --mail            Send an email with the results after the scan has finished (see email.json) (default: False)
+  -p PORTS, --ports PORTS
+                        comma-separated list of ports (default: 443,636,993,995,8443)
   -t THREADS, --threads THREADS
                         set number of threads (default: 5)
   -to TIMEOUT, --timeout TIMEOUT
                         socket timeout (default: 0.5)
   -v, --verbose
+  -y DAYS, --days DAYS  days until expiry date (default: 7)
 ```
 
 You can pass multiple IP addresses, hostnames, networks and ports by separating them with a comma:
@@ -76,15 +77,15 @@ You can optionally send the results to Splunk using an HTTP Event Collector. Edi
 ## Sending mail reports
 Create the file `email.json` and paste the following content:
 ```json
-{                                                                                                                        
-    "username": "user@name.here",                                                                                        
-    "password": "passwordHere",                                                                                          
-    "server": "servername",                                                                                              
-    "port": 25,                                                                                                          
-    "useTLS": "False",                                                                                                   
-    "useSTARTTLS": "True",                                                                                                                      
-    "senderMailAddress": "mail@example.net",                                                                             
-    "recipient": "mail@example.com"                                                                                      
-} 
+{
+    "username": "user@name.here",
+    "password": "passwordHere",
+    "server": "servername",
+    "port": 25,
+    "useTLS": "False",
+    "useSTARTTLS": "True",
+    "senderMailAddress": "mail@example.net",
+    "recipient": "mail@example.com"
+}
 ```
 When using `-m`/`--mail`, `certalert` will now send an email with all results.
