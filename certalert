@@ -5,6 +5,7 @@ import ipaddress as ipa
 import json
 import queue
 import requests
+import smtplib
 import socket
 import sqlite3
 import ssl
@@ -13,6 +14,7 @@ import threading
 import time
 import urllib3
 from OpenSSL import crypto
+from os.path import exists
 from datetime import datetime
 
 
@@ -32,21 +34,22 @@ def parse_args():
                              help='comma-separated list of hostnames, IP addresses or CIDR networks (e.g. localhost,127.0.0.1,fe80::,1.2.3.0/24)')
     sourcegroup.add_argument('-f', '--file', dest='file',
                              help='file containing host port1,port2,... lines, one line per host (see README)')
-    parser.add_argument('-p', '--ports', dest='ports', help='comma-separated list of ports',
-                        default='443,636,993,995,8443')
     parser.add_argument('-d', '--db', dest='dbfile', default='data.sqlite')
     parser.add_argument('-g', '--ignore', dest='ignorefile', default=None, help='File with hosts that should be ignored, one host per line')
-    parser.add_argument('-l', '--splunk', dest='use_splunk', default=False, action='store_true',
-                        help='Send an event to Splunk using the HTTP Event Collector (see splunk.json)')
     parser.add_argument('-k', '--insecure', dest='insecure', default=False, action='store_true',
                         help='Disable certificate checks when sending data to splunk.')
-    parser.add_argument('-y', '--days', dest='days', type=int, default=7, help='days until expiry date')
+    parser.add_argument('-l', '--splunk', dest='use_splunk', default=False, action='store_true',
+                        help='Send an event to Splunk using the HTTP Event Collector (see splunk.json)')
+    parser.add_argument('-m', '--mail', dest='send_mail', default=False, action='store_true',
+                        help='Send an email with the results after the scan has finished (see email.json)')
+    parser.add_argument('-p', '--ports', dest='ports', help='comma-separated list of ports',
+                        default='443,636,993,995,8443')
     parser.add_argument('-t', '--threads', dest='threads', type=int, default=5,
                         help='set number of threads')
     parser.add_argument('-to', '--timeout', dest='timeout', type=float, default=0.5,
                         help='socket timeout')
     parser.add_argument('-v', '--verbose', dest='verbose', default=False, action='store_true')
-
+    parser.add_argument('-y', '--days', dest='days', type=int, default=7, help='days until expiry date')
     return parser.parse_args()
 
 
@@ -142,17 +145,21 @@ def record_result(result_queue, args):
         with open('./splunk.json', 'r') as h:
             splunkcfg = json.load(h)
 
-        # we are done with housekeeping, let's start the main loop
+    report = ""  # this is used to format the results for the email report
+
+    # we are done with housekeeping, let's start the main loop
     while True:  # endless loop, terminates when killcmd is received
         try:
             result = result_queue.get(timeout=1)
             if result == killcmd:
+                if args.send_mail:
+                    send_mail(report)
                 conn.close()
                 return
             # the result was not our killcommand, so it's a regular result, we will write it to the DB
             # first, check if the combo host:port:fingerprint is already in the db
             # if so, update the date field and the expired field, otherwise insert the whole set
-            date, host, port, _, fingerprint, expired, _ = result
+            date, host, port, _, fingerprint, expired, expirydate = result
             record_already_present = False
             cursor.execute('select rowid,host,port from certdata where fingerprint=?', (fingerprint,))
             dbdata = cursor.fetchall()
@@ -163,6 +170,12 @@ def record_result(result_queue, args):
             if not record_already_present:
                 cursor.execute(query, result)
             conn.commit()
+
+            if expired:
+                report += f"{date}: certificate for {host}:{port} has expired on {expirydate}\n"
+            else:
+                report += f'{date}: certificate for {host}:{port} will expire in {(datetime.strptime(expirydate, "%Y-%m-%d %H:%M:%SZ") - datetime.strptime(date, "%Y-%m-%d %H:%M:%SZ")).days} days, on {expirydate}\n'
+
             # after we're done writing to the DB, check if --splunk has been set
             # if it's True, send the event to Splunk using HEC
             if args.use_splunk:
@@ -170,6 +183,37 @@ def record_result(result_queue, args):
         except queue.Empty:
             # we will keep going even if the result queue is empty
             pass
+
+
+def send_mail(report):
+    # read the config from the file email.json, then send an email with the final results
+
+    with open('email.json', 'r') as h:
+        cfg = json.load(h)
+
+    # use either TLS or STARTTLS, not both
+    if cfg['useTLS'].lower() == 'true' and cfg['useSTARTTLS'].lower() == 'true':
+        printlock.acquire()
+        print('[!] Mail: useTLS and useSTARTTLS are both set. Use only one or none. Won\'t send mail now! This is the report:')
+        print(report)
+        printlock.release()
+        return
+
+    if cfg['useTLS'].lower() == 'true':
+        smtp = smtplib.SMTP_SSL
+    else:
+        smtp = smtplib.SMTP
+
+    conn = smtp(cfg['server'], int(cfg['port']))
+    conn.ehlo()
+    if cfg['useSTARTTLS'].lower() == 'true':
+        conn.starttls()
+
+    conn.login(cfg['username'], cfg['password'])
+
+    message = f"Subject: {cfg['subject']}\n{report}"
+    conn.sendmail(cfg['senderMailAddress'], cfg['recipient'], message)
+    conn.quit()
 
 
 def send_to_splunk(result, cfg, args):
@@ -278,6 +322,14 @@ def main():
     # then it just periodically checks if the queue is empty and if all threads are finished
     # if this happens, the program exits
     args = parse_args()
+
+    if args.use_splunk and not exists('splunk.json'):
+        print('Splunk config not found, please create splunk.json (see README.md')
+        sys.exit(-10)
+
+    if args.send_mail and not exists('email.json'):
+        print('Mail config not found, please create email.json (see README.md')
+        sys.exit(-15)
 
     # don't print the annoying warning, we hopefully know what we're doing...
     if args.insecure:

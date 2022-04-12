@@ -64,3 +64,27 @@ The script will store certs that have expired or are about to expire in an sqlit
 
 ### Splunk HEC
 You can optionally send the results to Splunk using an HTTP Event Collector. Edit the file `splunk.json`, add the URL, the token and edit the sourcetype. The token in this repo is a test token for a local docker container, please don't open an issue for this, thanks.
+
+```json
+{
+    "url": "https://your.server.com:8088/services/collector",
+    "token": "your-token-here",
+    "sourcetype": "_json"
+}
+```
+
+## Sending mail reports
+Create the file `email.json` and paste the following content:
+```json
+{                                                                                                                        
+    "username": "user@name.here",                                                                                        
+    "password": "passwordHere",                                                                                          
+    "server": "servername",                                                                                              
+    "port": 25,                                                                                                          
+    "useTLS": "False",                                                                                                   
+    "useSTARTTLS": "True",                                                                                                                      
+    "senderMailAddress": "mail@example.net",                                                                             
+    "recipient": "mail@example.com"                                                                                      
+} 
+```
+When using `-m`/`--mail`, `certalert` will now send an email with all results.
