@@ -2,8 +2,8 @@
 Check host certificates and get an alert when a certificate is about to expire or has expired.
 
 ```
-$ ./certalert -h
-usage: certalert [-h] (-i HOSTS | -f FILE) [-p PORTS] [-d DBFILE] [-l] [-k] [-y DAYS] [-t THREADS] [-to TIMEOUT] [-v]
+./certalert -h                                       
+usage: certalert [-h] (-i HOSTS | -f FILE) [-p PORTS] [-d DBFILE] [-g IGNOREFILE] [-l] [-k] [-y DAYS] [-t THREADS] [-to TIMEOUT] [-v]
 
 Check sites and servers for expiring/expired TLS certificates
 
@@ -14,6 +14,8 @@ options:
   -p PORTS, --ports PORTS
                         comma-separated list of ports (default: 443,636,993,995,8443)
   -d DBFILE, --db DBFILE
+  -g IGNOREFILE, --ignore IGNOREFILE
+                        File with hosts that should be ignored, one host per line (default: None)
   -l, --splunk          Send an event to Splunk using the HTTP Event Collector (see splunk.json) (default: False)
   -k, --insecure        Disable certificate checks when sending data to splunk. (default: False)
   -y DAYS, --days DAYS  days until expiry date (default: 7)
