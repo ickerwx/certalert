@@ -145,14 +145,15 @@ def record_result(result_queue, args):
         with open('./splunk.json', 'r') as h:
             splunkcfg = json.load(h)
 
-    report = ""  # this is used to format the results for the email report
+    report = {'expired': [], 'expiring': []}  # this is used to format the results for the email report
 
     # we are done with housekeeping, let's start the main loop
     while True:  # endless loop, terminates when killcmd is received
         try:
             result = result_queue.get(timeout=1)
             if result == killcmd:
-                if args.send_mail:
+                if args.send_mail and (len(report['expired']) > 0 or len(report['expiring']) > 0):
+                    # only send mails when we have actual results to send
                     send_mail(report)
                 conn.close()
                 return
@@ -172,9 +173,9 @@ def record_result(result_queue, args):
             conn.commit()
 
             if expired:
-                report += f"{date}: certificate for {host}:{port} has expired on {expirydate}\n"
+                report['expired'].append((date, host, port, expirydate))
             else:
-                report += f'{date}: certificate for {host}:{port} will expire in {(datetime.strptime(expirydate, "%Y-%m-%d %H:%M:%SZ") - datetime.strptime(date, "%Y-%m-%d %H:%M:%SZ")).days} days, on {expirydate}\n'
+                report['expiring'].append((date, host, port, expirydate))
 
             # after we're done writing to the DB, check if --splunk has been set
             # if it's True, send the event to Splunk using HEC
@@ -211,7 +212,17 @@ def send_mail(report):
 
     conn.login(cfg['username'], cfg['password'])
 
-    message = f"Subject: {cfg['subject']}\n{report}"
+    message = f"Subject: {cfg['subject']}\n"
+    if len(report['expired']) > 0:
+        message += "# Expired Certificates\n"
+        for date, host, port, expirydate in report['expired']:
+            message += f"{date}: certificate for {host}:{port} expired on {expirydate}\n"
+        message += '\n'
+    if len(report['expiring']) > 0:
+        message += "# Expiring soon\n"
+        for date, host, port, expirydate in report['expiring']:
+            message += f'{date}: certificate for {host}:{port} will expire in {(datetime.strptime(expirydate, "%Y-%m-%d %H:%M:%SZ") - datetime.strptime(date, "%Y-%m-%d %H:%M:%SZ")).days} days, on {expirydate}\n'
+
     conn.sendmail(cfg['senderMailAddress'], cfg['recipient'], message)
     conn.quit()
 
