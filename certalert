@@ -311,7 +311,7 @@ def send_mail(report):
         content += '\n'
 
     message.set_content(content)
-    conn.send_mes    
+    conn.send_message(message)
     conn.quit()
 
 
