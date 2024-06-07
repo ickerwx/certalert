@@ -48,6 +48,8 @@ def parse_args():
                         help='set number of threads')
     parser.add_argument('-to', '--timeout', dest='timeout', type=float, default=0.5,
                         help='socket timeout')
+    parser.add_argument('-kl', '--keylength', dest='keylength', type=int, default=None,
+                        help='Check RSA key length, alert if key length is <= this number')
     parser.add_argument('-v', '--verbose', dest='verbose', default=False, action='store_true')
     parser.add_argument('-y', '--days', dest='days', type=int, default=7, help='days until expiry date')
     return parser.parse_args()
@@ -90,31 +92,89 @@ def scan_host(q, result_queue, args):
                     print(f'[i] Timestamp at {host}:{port} not UTC!')  # tbh, I'm not sure if this is even possible
                     printlock.release()
                 now = datetime.utcnow()
-                cert_expiry = None
+                cert_expiry = None  # will contain the date the cert expires/expired
                 try:
                     cert_expiry = datetime.strptime(asn1_time, '%Y%m%d%H%M%SZ')
                 except ValueError:
                     printlock.acquire()
                     print(f'[w] Can\'t parse expiry date for {host}:{port}', file=sys.stderr)
                     printlock.release()
+                
+                host_queued = False  # will be set to true once this particular host was sent to the result queue, in order not to send the same host twice
+                pk = cert.get_pubkey()
 
-                if cert_expiry is not None:
+                if cert_expiry is not None:  # the certificate has an expiry date
                     if cert.has_expired():
                         printlock.acquire()
                         print(f'[!] Certificate at {host}:{port} expired on {cert_expiry.strftime("%Y-%m-%d %H:%M:%SZ")}!')
                         printlock.release()
-                        result_queue.put((now.strftime('%Y-%m-%d %H:%M:%SZ'), str(host), port, crypto.dump_certificate(crypto.FILETYPE_PEM, cert), cert.digest('SHA256').decode(), 1 if cert.has_expired() else 0, cert_expiry.strftime("%Y-%m-%d %H:%M:%SZ")))
+                        result_queue.put(('expired',                                            # why was the host put into the queue?
+                                          now.strftime('%Y-%m-%d %H:%M:%SZ'),                   # time of scan
+                                          str(host),                                            # hostname/IP
+                                          port,                                                 # scanned service port
+                                          crypto.dump_certificate(crypto.FILETYPE_PEM, cert),   # PEM-encoded cert
+                                          cert.digest('SHA256').decode(),                       # certificate hash
+                                          1 if cert.has_expired() else 0,                       # is cert expired?
+                                          cert_expiry.strftime("%Y-%m-%d %H:%M:%SZ"),           # expiry date
+                                          pk.bits(),                                            # keylength
+                                          pk.type()))                                           # asymmetric algorithm
+                        host_queued = True
                     elif (cert_expiry - now).days <= args.days:
                         printlock.acquire()
                         print(f'[w] Certificate at {host}:{port} will expire in {(cert_expiry - now).days} days, on on {cert_expiry.strftime("%Y-%m-%d %H:%M:%SZ")}!')
                         printlock.release()
-                        result_queue.put((now.strftime('%Y-%m-%d %H:%M:%SZ'), str(host), port, crypto.dump_certificate(crypto.FILETYPE_PEM, cert), cert.digest('SHA256').decode(), 1 if cert.has_expired() else 0, cert_expiry.strftime("%Y-%m-%d %H:%M:%SZ")))
+                        result_queue.put(('expiring',                                           # why was the host put into the queue?
+                                          now.strftime('%Y-%m-%d %H:%M:%SZ'),                   # time of scan
+                                          str(host),                                            # hostname/IP
+                                          port,                                                 # scanned service port
+                                          crypto.dump_certificate(crypto.FILETYPE_PEM, cert),   # PEM-encoded cert
+                                          cert.digest('SHA256').decode(),                       # certificate hash
+                                          1 if cert.has_expired() else 0,                       # is cert expired?
+                                          cert_expiry.strftime("%Y-%m-%d %H:%M:%SZ"),           # expiry date
+                                          pk.bits(),                                            # keylength
+                                          pk.type()))                                           # asymmetric algorithm
+                        host_queued = True
                     elif args.verbose:
                         printlock.acquire()
                         print(f'[i] Certificate at {host}:{port} expires on {cert_expiry.strftime("%Y-%m-%d %H:%M:%SZ")}')
                         printlock.release()
+                
+                if args.keylength is not None:  # keylength check is enabled
+                    if pk.type() == crypto.TYPE_RSA and pk.bits() <= args.keylength:
+                        printlock.acquire()
+                        print(f'[!] Certificate at {host}:{port} has an RSA key with keylength of {pk.bits()}!')
+                        printlock.release()
+                        if not host_queued:  # cert hasn't expired yet and isn't expiring soon, so the host hasn't been written to the result queue yet.abs
+                                                # the keylength is not adequate, however, so we send the host to the queue now
+                            if cert_expiry is not None:
+                                expiry_date = cert_expiry.strftime("%Y-%m-%d %H:%M:%SZ")
+                            else:
+                                expiry_date = "EXPIRY DATE NOT SET"
+                            result_queue.put(('keylength',                                          # why was the host put into the queue?
+                                                now.strftime('%Y-%m-%d %H:%M:%SZ'),                   # time of scan
+                                                str(host),                                            # hostname/IP
+                                                port,                                                 # scanned service port
+                                                crypto.dump_certificate(crypto.FILETYPE_PEM, cert),   # PEM-encoded cert
+                                                cert.digest('SHA256').decode(),                       # certificate hash
+                                                1 if cert.has_expired() else 0,                       # is cert expired?
+                                                expiry_date,                                          # expiry date
+                                                pk.bits(),                                            # keylength
+                                                pk.type()))                                           # asymmetric algorithm
+                    elif args.verbose:
+                            keytype = None
+                            if pk.type() == crypto.TYPE_RSA:
+                                keytype = 'RSA'
+                            elif pk.type() == crypto.TYPE_DH:
+                                keytype = 'DH'
+                            elif pk.type() == crypto.TYPE_DSA:
+                                keytype = 'DSA'
+                            elif pk.type() == crypto.TYPE_EC:
+                                keytype = 'EC'
+                            printlock.acquire()
+                            print(f'[i] Certificate at {host}:{port} has a {keytype} key with keylength of {pk.bits()}!')
+                            printlock.release()
 
-            except (OSError, socket.timeout):
+            except (OSError):
                 # something broke, or the port does not do TLS, we just skip it
                 pass
 
@@ -122,7 +182,7 @@ def scan_host(q, result_queue, args):
 def record_result(result_queue, args):
     # take the result data, write it to an sqlite DB and optionally send it to Splunk
 
-    query = 'insert into certdata values (?, ?, ?, ?, ?, ?, ?)'
+    query = 'insert into certdata values (?, ?, ?, ?, ?, ?, ?, ?, ?)'
 
     # first get a cursor to the database
     conn = sqlite3.connect(args.dbfile)
@@ -139,20 +199,31 @@ def record_result(result_queue, args):
             certificate BLOB,
             fingerprint TEXT,
             expired INTEGER,
-            expirydate TEXT)""")
+            expirydate TEXT,
+            keylength INTEGER,
+            keytype INTEGER)""")
+    else:
+        # check if the table definitions need to be updated, earlier databases might be missing changes to the table definition
+        try:
+            cursor.execute("SELECT keylength from certdata")
+        except sqlite3.OperationalError:
+            # the table does not have the keylength column, add all necessary columns to the definition
+            cursor.execute("ALTER TABLE certdata add column keylength INTEGER")
+            cursor.execute("ALTER TABLE certdata add column keytype INTEGER")
+
 
     if args.use_splunk:
         with open('./splunk.json', 'r') as h:
             splunkcfg = json.load(h)
 
-    report = {'expired': [], 'expiring': []}  # this is used to format the results for the email report
+    report = {'expired': [], 'expiring': [], 'keylength': []}  # this is used to format the results for the email report
 
     # we are done with housekeeping, let's start the main loop
     while True:  # endless loop, terminates when killcmd is received
         try:
             result = result_queue.get(timeout=1)
             if result == killcmd:
-                if args.send_mail and (len(report['expired']) > 0 or len(report['expiring']) > 0):
+                if args.send_mail and (len(report['expired']) > 0 or len(report['expiring']) > 0 or len(report['keylength']) > 0):
                     # only send mails when we have actual results to send
                     send_mail(report)
                 conn.close()
@@ -160,22 +231,27 @@ def record_result(result_queue, args):
             # the result was not our killcommand, so it's a regular result, we will write it to the DB
             # first, check if the combo host:port:fingerprint is already in the db
             # if so, update the date field and the expired field, otherwise insert the whole set
-            date, host, port, _, fingerprint, expired, expirydate = result
+            reason, date, host, port, _, fingerprint, expired, expirydate, bits, pktype = result
             record_already_present = False
             cursor.execute('select rowid,host,port from certdata where fingerprint=?', (fingerprint,))
             dbdata = cursor.fetchall()
             for r, h, p in dbdata:
                 if host == h and port == p:
-                    cursor.execute('update certdata set date=?, expired=? where rowid=?', (date, expired, r))
+                    # bits and pktype is updated because these columns were introduced later and the values might have to be added.
+                    cursor.execute('update certdata set date=?, expired=?, keylength=?, keytype=? where rowid=?', (date, expired, bits, pktype, r))
                     record_already_present = True
             if not record_already_present:
-                cursor.execute(query, result)
+                cursor.execute(query, result[1:])
             conn.commit()
 
-            if expired:
+            if reason == 'expired':
                 report['expired'].append((date, host, port, expirydate))
-            else:
+            elif reason == 'expiring':
                 report['expiring'].append((date, host, port, expirydate))
+            
+            if args.keylength is not None and pktype == crypto.TYPE_RSA and bits <= args.keylength:
+                report['keylength'].append((date, host, port, bits))
+                    
 
             # after we're done writing to the DB, check if --splunk has been set
             # if it's True, send the event to Splunk using HEC
@@ -222,6 +298,10 @@ def send_mail(report):
         message += "# Expiring soon\n"
         for date, host, port, expirydate in report['expiring']:
             message += f'{date}: certificate for {host}:{port} will expire in {(datetime.strptime(expirydate, "%Y-%m-%d %H:%M:%SZ") - datetime.strptime(date, "%Y-%m-%d %H:%M:%SZ")).days} days, on {expirydate}\n'
+    if len(report['keylength']) > 0:
+        message += "# Short RSA Keys\n"
+        for date, host, port, bits in report['keylength']:
+            message += f'{date}: certificate for {host}:{port} has an RSA key length of only {bits} bits\n'
 
     conn.sendmail(cfg['senderMailAddress'], cfg['recipient'], message)
     conn.quit()
@@ -234,8 +314,8 @@ def send_to_splunk(result, cfg, args):
     headers = {'Authorization': f'Splunk {cfg["token"]}'}  # edit token in splunk.json
 
     # prepare event JSON
-    date, host, port, cert, fingerprint, expired, expirydate = result
-    data = {'checkdate': date, 'host': host, 'port': port, 'hostcert': cert.decode(), 'fingerprint': fingerprint, 'expired': 'true' if expired else 'false', 'expirydate': expirydate}
+    date, host, port, cert, fingerprint, expired, expirydate, bits, pktype = result
+    data = {'checkdate': date, 'host': host, 'port': port, 'hostcert': cert.decode(), 'fingerprint': fingerprint, 'expired': 'true' if expired else 'false', 'expirydate': expirydate, 'keylength': bits, 'keytype': pktype}
     event = {'sourcetype': cfg['sourcetype'], 'event': data}
 
     # send event to splunk
@@ -265,13 +345,17 @@ def write_targets_to_queue(target_queue, args):
             ports = set([int(p) for p in args.ports.split(',')])  # convert list comprehension to set for unique values
             for item in items:
                 if str(item) in ignore_hosts:
+                    printlock.acquire()
                     print(f'[i] Ignoring {item}')
+                    printlock.release()
                     continue
                 if '/' in item:  # if / is in the item, then it's a CIDR notation network
                     network = ipa.ip_network(item, strict=False)
                     for host in network.hosts():
                         if str(host) in ignore_hosts:
+                            printlock.acquire()
                             print(f'[i] Ignoring {host}')
+                            printlock.release()
                             continue
                         target_queue.put((host, ports))  # put each IP of the network into the target queue
                 else:
@@ -291,14 +375,18 @@ def write_targets_to_queue(target_queue, args):
                     host = line
                     ports = args.ports
                 if str(host) in ignore_hosts:
+                    printlock.acquire()
                     print(f'[i] Ignoring {host}')
+                    printlock.release()
                     continue
                 ports = set([int(p) for p in ports.split(',')])  # convert list comprehension to set for unique values
                 if '/' in host:  # CIDR notation network
                     network = ipa.ip_network(host, strict=False)
                     for host in network.hosts():
                         if str(host) in ignore_hosts:
+                            printlock.acquire()
                             print(f'[i] Ignoring {host}')
+                            printlock.release()
                             continue
                         target_queue.put((host, ports))  # put each IP of the network into the target queue
                 else:
@@ -309,7 +397,9 @@ def write_targets_to_queue(target_queue, args):
                         # probably a hostname
                         target_queue.put((host, ports))
     except Exception as e:
+        printlock.acquire()
         print('Error: %s' % e, file=sys.stderr)
+        printlock.release()
         sys.exit(1)
 
 
