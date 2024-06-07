@@ -16,6 +16,7 @@ import urllib3
 from OpenSSL import crypto
 from os.path import exists
 from datetime import datetime
+from email.message import EmailMessage
 
 
 killcmd = "PLSRETURNKTHXBYE"  # used to signal the dbthread to return
@@ -288,22 +289,29 @@ def send_mail(report):
 
     conn.login(cfg['username'], cfg['password'])
 
-    message = f"Subject: {cfg['subject']}\n"
+    message = EmailMessage()
+    message['Subject'] = cfg['subject']
+    message['From'] = cfg['senderMailAddress']
+    message['To'] = cfg['recipient']
+    content = ''
     if len(report['expired']) > 0:
-        message += "# Expired Certificates\n"
+        content += "# Expired Certificates\n"
         for date, host, port, expirydate in report['expired']:
-            message += f"{date}: certificate for {host}:{port} expired on {expirydate}\n"
-        message += '\n'
+            content += f"{date}: certificate for {host}:{port} expired on {expirydate}\n"
+        content += '\n'
     if len(report['expiring']) > 0:
-        message += "# Expiring soon\n"
+        content += "# Expiring soon\n"
         for date, host, port, expirydate in report['expiring']:
-            message += f'{date}: certificate for {host}:{port} will expire in {(datetime.strptime(expirydate, "%Y-%m-%d %H:%M:%SZ") - datetime.strptime(date, "%Y-%m-%d %H:%M:%SZ")).days} days, on {expirydate}\n'
+            content += f'{date}: certificate for {host}:{port} will expire in {(datetime.strptime(expirydate, "%Y-%m-%d %H:%M:%SZ") - datetime.strptime(date, "%Y-%m-%d %H:%M:%SZ")).days} days, on {expirydate}\n'
+        content += '\n'
     if len(report['keylength']) > 0:
-        message += "# Short RSA Keys\n"
+        content += "# Short RSA Keys\n"
         for date, host, port, bits in report['keylength']:
-            message += f'{date}: certificate for {host}:{port} has an RSA key length of only {bits} bits\n'
+            content += f'{date}: certificate for {host}:{port} has an RSA key length of only {bits} bits\n'
+        content += '\n'
 
-    conn.sendmail(cfg['senderMailAddress'], cfg['recipient'], message)
+    message.set_content(content)
+    conn.send_mes    
     conn.quit()
 
 

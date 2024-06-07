@@ -85,7 +85,7 @@ Create the file `email.json` and paste the following content:
     "useTLS": "False",
     "useSTARTTLS": "True",
     "senderMailAddress": "mail@example.net",
-    "recipient": "mail@example.com"
+    "recipient": "mail@example.com, mail2.example.net"
 }
 ```
 When using `-m`/`--mail`, `certalert` will now send an email with all results.
